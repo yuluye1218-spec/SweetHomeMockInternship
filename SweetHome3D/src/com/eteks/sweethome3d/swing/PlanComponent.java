@@ -2002,10 +2002,14 @@ public class PlanComponent extends JComponent implements PlanView, Scrollable, P
     }
     return strokeWidth;
   }
-  
+
   /**
-   * Prints this component plan at the scale given in the home print attributes or at a scale 
-   * that makes it fill <code>pageFormat</code> imageable size if this attribute is <code>null</code>.
+   * Prints this component plan, one plan for each viewable level of the home in level order
+   * (or a single plan if the home has no level), at the scale given in the home print
+   * attributes or at a scale that makes it fill <code>pageFormat</code> imageable size
+   * if this attribute is <code>null</code>.
+   * Each level is printed on one or more pages, and the level selected in the home
+   * is restored once a page is printed, even if it couldn't be rendered.
    */
   public int print(Graphics g, PageFormat pageFormat, int pageIndex) {
     List<Selectable> printedItems = getPaintedItems(); 
@@ -2015,21 +2019,15 @@ public class PlanComponent extends JComponent implements PlanView, Scrollable, P
       double imageableY = pageFormat.getImageableY();
       double imageableWidth = pageFormat.getImageableWidth();
       double imageableHeight = pageFormat.getImageableHeight();
+
       float printScale;
-      float rowIndex;
-      float columnIndex;
       int pagesPerRow;
       int pagesPerColumn;
       if (this.home.getPrint() == null || this.home.getPrint().getPlanScale() == null) {
         // Compute a scale that ensures the plan will fill the component if plan scale is null
         printScale = getPrintPreferredScale(g, pageFormat) * LengthUnit.centimeterToInch(72);
-        if (pageIndex > 0) {
-          return NO_SUCH_PAGE;
-        }
         pagesPerRow = 1;
         pagesPerColumn = 1;
-        rowIndex   = 0;
-        columnIndex = 0;
       } else {
         // Apply print scale to paper size expressed in 1/72nds of an inch
         printScale = this.home.getPrint().getPlanScale().floatValue() * LengthUnit.centimeterToInch(72);
@@ -2041,12 +2039,18 @@ public class PlanComponent extends JComponent implements PlanView, Scrollable, P
         if (printedItemBounds.getHeight() * printScale != imageableHeight) {
           pagesPerColumn++;
         }
-        if (pageIndex >= pagesPerRow * pagesPerColumn) {
-          return NO_SUCH_PAGE;
-        }
-        rowIndex = pageIndex / pagesPerRow;
-        columnIndex = pageIndex - rowIndex * pagesPerRow;
       }
+
+      // Print one group of pages for each viewable level, in level order
+      List<Level> printedLevels = getPrintedLevels();
+      int pagesPerLevel = pagesPerRow * pagesPerColumn;
+      if (pageIndex >= pagesPerLevel * printedLevels.size()) {
+        return NO_SUCH_PAGE;
+      }
+      Level printedLevel = printedLevels.get(pageIndex / pagesPerLevel);
+      int levelPageIndex = pageIndex % pagesPerLevel;
+      int rowIndex = levelPageIndex / pagesPerRow;
+      int columnIndex = levelPageIndex - rowIndex * pagesPerRow;
           
       Graphics2D g2D = (Graphics2D)g.create();
       g2D.clip(new Rectangle2D.Double(imageableX, imageableY, imageableWidth, imageableHeight));
@@ -2062,17 +2066,42 @@ public class PlanComponent extends JComponent implements PlanView, Scrollable, P
           Math.max(0, 
               (imageableHeight * pagesPerColumn / printScale - printedItemBounds.getHeight() - 2 * extraMargin) / 2));
       setRenderingHints(g2D);
+      setRenderingHints(g2D);
+      // Temporarily select the printed level and always restore the previous one
+      Level selectedLevel = this.home.getSelectedLevel();
       try {
+        if (printedLevel != null) {
+          this.home.setSelectedLevel(printedLevel);
+        }
         // Print component contents
         paintContent(g2D, printScale, PaintMode.PRINT);
       } catch (InterruptedIOException ex) {
-        // Ignore exception because it may happen only in EXPORT paint mode 
-      }   
-      g2D.dispose();
+        // Ignore exception because it may happen only in EXPORT paint mode
+      } finally {
+        this.home.setSelectedLevel(selectedLevel);
+        g2D.dispose();
+      }
       return PAGE_EXISTS;
     } else {
       return NO_SUCH_PAGE;
     }
+  }
+
+  /**
+   * Returns the levels printed by this component, in level order: the viewable levels of home, or null if home has no level.
+   */
+  private List<Level> getPrintedLevels() {
+    List<Level> printedLevels = new ArrayList<Level>();
+    for (Level level : this.home.getLevels()) {
+      if (level.isViewable()) {
+        printedLevels.add(level);
+      }
+    }
+    if (this.home.getLevels().isEmpty()) {
+      // A home without levels still prints one plan
+      printedLevels.add(null);
+    }
+    return printedLevels;
   }
   
   /**
